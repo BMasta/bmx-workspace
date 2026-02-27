@@ -1,0 +1,101 @@
+{
+  "name": "bmx-workspace",
+  "publisher": "BMasta",
+  "displayName": "BMX - Workspace",
+  "description": "My personal extension designed to run in the workspace.",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.109.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "activationEvents": [
+    "onLanguage:c"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "bmx-workspace.fixLineBreaks",
+        "title": "BMX - Workspace: Fix line breaks"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "bmx-workspace.fixLineBreaks"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "BMX - Workspace",
+      "properties": {
+        "bmx-workspace.lineBreakIndentWidth": {
+          "type": "integer",
+          "default": 8,
+          "description": "Desired indentation width at line breaks. Spaces are worth 1 point. Tabs are worth 4 by default (configurable).",
+          "scope": "application"
+        },
+        "bmx-workspace.lineBreakTabSize": {
+          "type": "integer",
+          "default": 4,
+          "description": "How much spaces one tab is worth when counting the desired indentation at line breaks.",
+          "scope": "application"
+        },
+        "bmx-workspace.rulerHighlight": {
+          "type": "boolean",
+          "default": true,
+          "description": "Should issues be highlighted on the overview ruler?",
+          "scope": "application"
+        },
+        "bmx-workspace.rulerHighlightColor": {
+          "type": "string",
+          "default": "#8F24B3EF",
+          "description": "Color used for overview ruler markers.",
+          "scope": "application"
+        },
+        "bmx-workspace.textHighlight": {
+          "type": "boolean",
+          "default": true,
+          "description": "Should issues be highlighted in text?",
+          "scope": "application"
+        },
+        "bmx-workspace.textHighlightColor": {
+          "type": "string",
+          "default": "#B82EE620",
+          "description": "Color used for text highlights.",
+          "scope": "application"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "webpack",
+    "watch": "webpack --watch",
+    "package": "webpack --mode production --devtool hidden-source-map",
+    "compile-tests": "tsc -p . --outDir out",
+    "watch-tests": "tsc -p . -w --outDir out",
+    "pretest": "npm run compile-tests && npm run compile && npm run lint",
+    "lint": "eslint src --ext ts",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.109.0",
+    "@types/mocha": "^10.0.6",
+    "@types/node": "18.x",
+    "@typescript-eslint/eslint-plugin": "^7.4.0",
+    "@typescript-eslint/parser": "^7.4.0",
+    "eslint": "^8.57.0",
+    "typescript": "^5.3.3",
+    "ts-loader": "^9.5.1",
+    "webpack": "^5.91.0",
+    "webpack-cli": "^5.1.4",
+    "@vscode/test-cli": "^0.0.8",
+    "@vscode/test-electron": "^2.3.9"
+  }
+}
