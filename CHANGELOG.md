@@ -1,5 +1,10 @@
 # Changelog
 
+## Version 0.1.5
+
+### Changed
+- Combined parenthesis and code line checks to fix issues with mixed ranges
+
 ## Version 0.1.4
 
 ### Changed

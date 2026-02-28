@@ -3,7 +3,7 @@
   "publisher": "BMasta",
   "displayName": "BMX - Workspace",
   "description": "My personal extension designed to run in the workspace.",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "engines": {
     "vscode": "^1.109.0"
   },

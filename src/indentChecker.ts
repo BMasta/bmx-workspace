@@ -29,15 +29,20 @@ type Setting = {
     default: any
 }
 
-type RangeClassifier = (ch: string, alreadyInRange: boolean) => boolean
-type IndentationMarker = (ch: string) => boolean;
+type RangeClassifier = (t: string, i: number, inRange: boolean) => boolean
+type IndentationMarker = (t: string, i: number) => boolean;
 
 type RangeDescriptor = {
-    valid: RangeClassifier
+    // When true, all unfinished ranges are discarded
+    invalid: RangeClassifier
+    // When true, a new range is started
     start: RangeClassifier
+    // When true, all unfinished ranges are ended
     end: RangeClassifier
-    indentIncrease: IndentationMarker
-    indentDecrease: IndentationMarker
+    // When true, takes current line indentation + desired as a baseline for subsequent lines
+    indentUpdate: IndentationMarker
+    // When true, restores the last target indentation. No-op if only one indentation is left.
+    indentRestore: IndentationMarker
 }
 
 /*---------------------- Globals ----------------------------------------------------------------*/
@@ -51,27 +56,13 @@ const S_TEXT_BG_COLOR: Setting = { setting: "textHighlightColor", default: "#B82
 
 let badIndentDeco: vscode.TextEditorDecorationType | undefined
 
-let parenRangeDescriptor: RangeDescriptor = {
-    valid: _ => true,
-    start: ch => ch === "(",
-    end: ch => ch === ")",
-    indentIncrease: ch => ch === "(",
-    indentDecrease: ch => ch === ")",
-}
-let sqbRangeDescriptor: RangeDescriptor = {
-    valid: _ => true,
-    start: ch => ch === "[",
-    end: ch => ch === "]",
-    indentIncrease: ch => ch === "[",
-    indentDecrease: ch => ch === "]",
-}
 let codeLineRangeDescriptor: RangeDescriptor = {
-    valid: ch => !["(", ")", "[", "]", "{", "}", ":"].includes(ch),
-    start: (ch, alreadyInRange) =>
-        !(alreadyInRange || [";", ",", "\r", "\n", "\t", " "].includes(ch)),
-    end: ch => [";", ","].includes(ch),
-    indentIncrease: _ => false,
-    indentDecrease: _ => false,
+    invalid: (t, i, _) => [":", "{", "}"].includes(t[i]),
+    start: (t, i, inRange) =>
+        !(inRange || [";", ",", "\r", "\n", "\t", " "].includes(t[i]) || !isFirstCharInLine(t, i)),
+    end: (t, i, _) => t[i] === ";",
+    indentUpdate: (t, i) => ["(", "["].includes(t[i]),
+    indentRestore: (t, i) => [")", "]"].includes(t[i]),
 }
 
 /*---------------------- APIs -------------------------------------------------------------------*/
@@ -158,8 +149,6 @@ async function fixIndentationViolationsInActiveEditor() {
     }
 
     await editor.edit(editBuilder => {
-        fixForRanges(editBuilder, parenRangeDescriptor)
-        fixForRanges(editBuilder, sqbRangeDescriptor)
         fixForRanges(editBuilder, codeLineRangeDescriptor)
     })
 
@@ -263,6 +252,14 @@ function isLineSplicedAt(text: string, i: number): boolean {
     return text[i] === "\\";
 }
 
+function isFirstCharInLine(text: string, i: number): boolean {
+    if (text[i] === "\r" || text[i] === "\n" || isWhitespace(text[i])) return false;
+    if (i === 0) return true;
+    i--;
+    for (; i > 0 && isWhitespace(text[i]); --i) { }
+    return text[i] === "\n"
+}
+
 function getLineBreakRanges(doc: vscode.TextDocument, rd: RangeDescriptor) {
     const text = doc.getText()
 
@@ -345,11 +342,11 @@ function getLineBreakRanges(doc: vscode.TextDocument, rd: RangeDescriptor) {
 
                 // Detect range starts/ends. Add to list of ranges once end is found.
                 if (!inDirective) {
-                    if (!rd.valid(ch, stack.length > 0)) {
+                    if (rd.invalid(text, i, stack.length > 0)) {
                         stack.length = 0;
-                    } else if (rd.start(ch, stack.length > 0)) {
+                    } else if (rd.start(text, i, stack.length > 0)) {
                         stack.push(i);
-                    } else if (rd.end(ch, stack.length > 0)) {
+                    } else if (rd.end(text, i, stack.length > 0)) {
                         const start = stack.pop();
                         if (start !== undefined && stack.length === 0) {
                             const startPos = doc.positionAt(start);
@@ -382,8 +379,6 @@ function getViolatingLineBreakRanges(doc: vscode.TextDocument) {
         }
     }
 
-    addIndentRangesForLBRanges(parenRangeDescriptor)
-    addIndentRangesForLBRanges(sqbRangeDescriptor)
     addIndentRangesForLBRanges(codeLineRangeDescriptor)
 
     return violatingRanges;
@@ -402,6 +397,11 @@ function getViolatingIndentRangeFromLine(
         new vscode.Position(line.lineNumber, line.firstNonWhitespaceCharacterIndex)
     )
     const [actualIndent, indentType] = indentWidth(doc.getText(indentRange), tabSize)
+
+    // Found a preprocessor directive, ignore indentation for line
+    if (line.text[actualIndent] == "#") {
+        return undefined
+    }
 
     // Check if line has bad indentation
     if (
@@ -486,10 +486,10 @@ function getViolatingIndentRanges(
                 if (ch === "'") { state = State.Char; escape = false; break; }
 
                 // Keep track of line indentations
-                if (rd.indentIncrease(ch)) {
+                if (rd.indentUpdate(text, i)) {
                     const [indent, _] = indentWidth(doc.lineAt(lineIdx).text, tabSize);
                     indentStack.push(indent);
-                } else if ((rd.indentDecrease(ch)) && indentStack.length > 1) {
+                } else if ((rd.indentRestore(text, i)) && indentStack.length > 1) {
                     indentStack.pop();
                 }
 
