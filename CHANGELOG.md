@@ -1,5 +1,10 @@
 # Changelog
 
+## Version 0.1.2
+
+### Changed
+- Fixed parsing issue when checker wouldn't correctly recognize line splices in preprocessor directives
+
 ## Version 0.1.1
 
 ### Changed

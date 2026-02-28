@@ -94,7 +94,7 @@ function refreshAllIndentationViolations(resetDecorations: boolean) {
         const docUri = ed.document.uri.toString(true);
         let offendingRanges = rangeCache.get(docUri)
         if (offendingRanges === undefined) {
-            offendingRanges = getViolatingRanges(ed.document)
+            offendingRanges = getViolatingParenRanges(ed.document)
             rangeCache.set(docUri, offendingRanges)
         }
         ed.setDecorations(badIndentDeco, offendingRanges)
@@ -129,7 +129,7 @@ async function fixIndentationViolationsInActiveEditor() {
 function refreshIndentationViolations(doc: vscode.TextDocument) {
     if (doc.languageId !== "c" || badIndentDeco === undefined) return
 
-    const offendingRanges = getViolatingRanges(doc);
+    const offendingRanges = getViolatingParenRanges(doc);
     for (const ed of vscode.window.visibleTextEditors) {
         if (ed.document.uri.toString() === doc.uri.toString()) {
             ed.setDecorations(badIndentDeco, offendingRanges);
@@ -215,8 +215,11 @@ function isBlockCommentEnd(ch: string, next: string) {
 
 function isLineSplicedAt(text: string, i: number): boolean {
     if (text[i] != '\n') return false
+
     // Backtrack to the last non-whitespace and non-\r character
-    for (; i > 0 && (text[i] === "\r" || isWhitespace(text[i])); --i) { }
+    for (; i > 1 && (text[i] === "\r" || isWhitespace(text[i])); --i) { }
+    i--;
+
     return text[i] === "\\";
 }
 
@@ -323,6 +326,18 @@ function getParenRanges(doc: vscode.TextDocument) {
     }
 
     return ranges;
+}
+
+function getViolatingParenRanges(doc: vscode.TextDocument) {
+    const violatingRanges: vscode.Range[] = [];
+
+    for (const r of getParenRanges(doc)) {
+        if (getViolatingIndentRanges(doc, r).length > 0) {
+            violatingRanges.push(r);
+        }
+    }
+
+    return violatingRanges;
 }
 
 function getViolatingIndentRangeFromLine(
@@ -438,16 +453,4 @@ function getViolatingIndentRanges(doc: vscode.TextDocument, range: vscode.Range)
     }
 
     return violatingRanges;
-}
-
-function getViolatingRanges(doc: vscode.TextDocument) {
-    const offendingRanges: vscode.Range[] = [];
-
-    for (const r of getParenRanges(doc)) {
-        if (getViolatingIndentRanges(doc, r).length > 0) {
-            offendingRanges.push(r);
-        }
-    }
-
-    return offendingRanges;
 }
