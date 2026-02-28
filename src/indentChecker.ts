@@ -29,6 +29,17 @@ type Setting = {
     default: any
 }
 
+type RangeClassifier = (ch: string, alreadyInRange: boolean) => boolean
+type IndentationMarker = (ch: string) => boolean;
+
+type RangeDescriptor = {
+    valid: RangeClassifier
+    start: RangeClassifier
+    end: RangeClassifier
+    indentIncrease: IndentationMarker
+    indentDecrease: IndentationMarker
+}
+
 /*---------------------- Globals ----------------------------------------------------------------*/
 const S_LB_INDENT_W: Setting = { setting: "lineBreakIndentWidth", default: 8 }
 const S_LB_TAB_SIZE: Setting = { setting: "lineBreakTabSize", default: 4 }
@@ -39,6 +50,29 @@ const S_TEXT_BG_ENA: Setting = { setting: "textHighlight", default: true }
 const S_TEXT_BG_COLOR: Setting = { setting: "textHighlightColor", default: "#B82EE620" }
 
 let badIndentDeco: vscode.TextEditorDecorationType | undefined
+
+let parenRangeDescriptor: RangeDescriptor = {
+    valid: _ => true,
+    start: ch => ch === "(",
+    end: ch => ch === ")",
+    indentIncrease: ch => ch === "(",
+    indentDecrease: ch => ch === ")",
+}
+let sqbRangeDescriptor: RangeDescriptor = {
+    valid: _ => true,
+    start: ch => ch === "[",
+    end: ch => ch === "]",
+    indentIncrease: ch => ch === "[",
+    indentDecrease: ch => ch === "]",
+}
+let codeLineRangeDescriptor: RangeDescriptor = {
+    valid: ch => !["(", ")", "[", "]", "{", "}", ":"].includes(ch),
+    start: (ch, alreadyInRange) =>
+        !(alreadyInRange || [";", ",", "\r", "\n", "\t", " "].includes(ch)),
+    end: ch => [";", ","].includes(ch),
+    indentIncrease: _ => false,
+    indentDecrease: _ => false,
+}
 
 /*---------------------- APIs -------------------------------------------------------------------*/
 export function activate(context: vscode.ExtensionContext) {
@@ -94,7 +128,7 @@ function refreshAllIndentationViolations(resetDecorations: boolean) {
         const docUri = ed.document.uri.toString(true);
         let offendingRanges = rangeCache.get(docUri)
         if (offendingRanges === undefined) {
-            offendingRanges = getViolatingParenRanges(ed.document)
+            offendingRanges = getViolatingLineBreakRanges(ed.document)
             rangeCache.set(docUri, offendingRanges)
         }
         ed.setDecorations(badIndentDeco, offendingRanges)
@@ -107,20 +141,26 @@ async function fixIndentationViolationsInActiveEditor() {
         return
     }
 
-    const parenRanges = getParenRanges(editor.document);
-    await editor.edit(editBuilder => {
-        for (const pr of parenRanges) {
-            const virs = getViolatingIndentRanges(editor.document, pr)
+    const fixForRanges = (eb: vscode.TextEditorEdit, rd: RangeDescriptor) => {
+        const ranges = getLineBreakRanges(editor.document, rd);
+        for (const r of ranges) {
+            const virs = getViolatingIndentRanges(editor.document, r, rd)
             for (const vir of virs) {
                 if (vir.range.isEmpty) {
                     // Remove blank lines within a parenthesis range
-                    editBuilder.delete(editor.document.lineAt(vir.range.start.line).rangeIncludingLineBreak)
+                    eb.delete(editor.document.lineAt(vir.range.start.line).rangeIncludingLineBreak)
                 } else {
                     // Fix indentation of non-blank lines
-                    editBuilder.replace(vir.range, vir.expectedIndentation)
+                    eb.replace(vir.range, vir.expectedIndentation)
                 }
             }
         }
+    }
+
+    await editor.edit(editBuilder => {
+        fixForRanges(editBuilder, parenRangeDescriptor)
+        fixForRanges(editBuilder, sqbRangeDescriptor)
+        fixForRanges(editBuilder, codeLineRangeDescriptor)
     })
 
     if (editor.document.isDirty) refreshIndentationViolations(editor.document)
@@ -129,7 +169,7 @@ async function fixIndentationViolationsInActiveEditor() {
 function refreshIndentationViolations(doc: vscode.TextDocument) {
     if (doc.languageId !== "c" || badIndentDeco === undefined) return
 
-    const offendingRanges = getViolatingParenRanges(doc);
+    const offendingRanges = getViolatingLineBreakRanges(doc);
     for (const ed of vscode.window.visibleTextEditors) {
         if (ed.document.uri.toString() === doc.uri.toString()) {
             ed.setDecorations(badIndentDeco, offendingRanges);
@@ -223,7 +263,7 @@ function isLineSplicedAt(text: string, i: number): boolean {
     return text[i] === "\\";
 }
 
-function getParenRanges(doc: vscode.TextDocument) {
+function getLineBreakRanges(doc: vscode.TextDocument, rd: RangeDescriptor) {
     const text = doc.getText()
 
     const stack: number[] = []
@@ -235,13 +275,14 @@ function getParenRanges(doc: vscode.TextDocument) {
 
     console.log("Parsing ", doc.fileName)
     for (let i = 0; i < text.length; ++i) {
-        if (text[i] == '\r') i++
+        if (text[i] === '\r') i++
         const ch = text[i]
         const next = (i + 1 < text.length) ? text[i + 1] : ""
 
         switch (state) {
             case State.LineComment: {
-                if (ch === "\n") state = State.Code
+                // Process newline again in code state
+                if (ch === "\n") { state = State.Code; --i }
                 break;
             }
 
@@ -274,7 +315,7 @@ function getParenRanges(doc: vscode.TextDocument) {
                 }
 
                 // End directive if this newline isn't spliced
-                if (inDirective && text[i] == '\n' && !isLineSplicedAt(text, i)) {
+                if (inDirective && text[i] === '\n' && !isLineSplicedAt(text, i)) {
                     inDirective = false;
                 }
 
@@ -302,14 +343,15 @@ function getParenRanges(doc: vscode.TextDocument) {
                     break;
                 }
 
-                // Detect parenthesis range starts/ends. Add to list of ranges once end is found.
+                // Detect range starts/ends. Add to list of ranges once end is found.
                 if (!inDirective) {
-                    if (ch === "(") {
+                    if (!rd.valid(ch, stack.length > 0)) {
+                        stack.length = 0;
+                    } else if (rd.start(ch, stack.length > 0)) {
                         stack.push(i);
-                    } else if (ch === ")") {
+                    } else if (rd.end(ch, stack.length > 0)) {
                         const start = stack.pop();
                         if (start !== undefined && stack.length === 0) {
-                            // Range is [start, i+1) so it includes both '(' and ')'
                             const startPos = doc.positionAt(start);
                             const endPos = doc.positionAt(i + 1);
                             const range = new vscode.Range(startPos, endPos);
@@ -328,14 +370,21 @@ function getParenRanges(doc: vscode.TextDocument) {
     return ranges;
 }
 
-function getViolatingParenRanges(doc: vscode.TextDocument) {
+function getViolatingLineBreakRanges(doc: vscode.TextDocument) {
     const violatingRanges: vscode.Range[] = [];
 
-    for (const r of getParenRanges(doc)) {
-        if (getViolatingIndentRanges(doc, r).length > 0) {
-            violatingRanges.push(r);
+    const addIndentRangesForLBRanges = (rd: RangeDescriptor) => {
+        const ranges = getLineBreakRanges(doc, rd);
+        for (const r of ranges) {
+            if (getViolatingIndentRanges(doc, r, rd).length > 0) {
+                violatingRanges.push(r);
+            }
         }
     }
+
+    addIndentRangesForLBRanges(parenRangeDescriptor)
+    addIndentRangesForLBRanges(sqbRangeDescriptor)
+    addIndentRangesForLBRanges(codeLineRangeDescriptor)
 
     return violatingRanges;
 }
@@ -359,18 +408,18 @@ function getViolatingIndentRangeFromLine(
         // Expected some indentation, but found none
         (expectedIndent > 0 && indentType === IndentType.None) ||
         // Unexpected indentation type
-        (indentType === IndentType.Mixed || indentType == IndentType.TabsThenTooManySpaces) ||
+        (indentType === IndentType.Mixed || indentType === IndentType.TabsThenTooManySpaces) ||
         // Unexpected indentation width
         (expectedIndent != actualIndent) ||
         // Desired indentation can be achieved with only tabs, but spaces found
-        (indentType == IndentType.TabsThenSpaces && actualIndent % tabSize == 0)
+        (indentType === IndentType.TabsThenSpaces && actualIndent % tabSize === 0)
     ) {
         console.log("Line %d violates indentation", lineIdx)
 
         // Construct the desired indetation string
         let expectedIndentStr: string
         if (indentType === IndentType.Tabs ||
-            indentType == IndentType.TabsThenSpaces ||
+            indentType === IndentType.TabsThenSpaces ||
             indentType === IndentType.TabsThenTooManySpaces
         ) {
             // Use as many tabs as possible, pad the rest with spaces
@@ -385,7 +434,9 @@ function getViolatingIndentRangeFromLine(
     }
 }
 
-function getViolatingIndentRanges(doc: vscode.TextDocument, range: vscode.Range): ViolatingRange[] {
+function getViolatingIndentRanges(
+    doc: vscode.TextDocument, range: vscode.Range, rd: RangeDescriptor
+): ViolatingRange[] {
     const violatingRanges: ViolatingRange[] = []
     const tabSize = getConf(S_LB_TAB_SIZE)
     const text = doc.getText(range);
@@ -394,6 +445,10 @@ function getViolatingIndentRanges(doc: vscode.TextDocument, range: vscode.Range)
     let state = State.Code;
     let escape = false;
 
+    // Remember indentation of the first line as reference for non-parenthesis ranges
+    const [indent, _] = indentWidth(doc.lineAt(lineIdx).text, tabSize);
+    indentStack.push(indent)
+
     for (let i = 0; i < text.length; i++) {
         if (text[i] === "\r") i++;
         const ch = text[i];
@@ -401,7 +456,8 @@ function getViolatingIndentRanges(doc: vscode.TextDocument, range: vscode.Range)
 
         switch (state) {
             case State.LineComment:
-                if (ch == "\n") state = State.Code;
+                // Process newline again in code state
+                if (ch === "\n") { state = State.Code; --i }
                 break;
 
             case State.BlockComment:
@@ -429,15 +485,15 @@ function getViolatingIndentRanges(doc: vscode.TextDocument, range: vscode.Range)
                 if (ch === '"') { state = State.String; escape = false; break; }
                 if (ch === "'") { state = State.Char; escape = false; break; }
 
-                // Keep track of line indentations for all opening parentheses
-                if (ch === "(") {
+                // Keep track of line indentations
+                if (rd.indentIncrease(ch)) {
                     const [indent, _] = indentWidth(doc.lineAt(lineIdx).text, tabSize);
                     indentStack.push(indent);
-                } else if (ch === ")") {
+                } else if ((rd.indentDecrease(ch)) && indentStack.length > 1) {
                     indentStack.pop();
                 }
 
-                // When inside a parenthesis range and at end of line,
+                // When inside a range and at end of line,
                 // Check next line for indentation violations and add to list if found any
                 if ((ch === "\n") && (indentStack.length !== 0)) {
                     const expectedIndentIncrease = getConf(S_LB_INDENT_W)
