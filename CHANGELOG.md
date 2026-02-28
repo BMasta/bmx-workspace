@@ -1,5 +1,10 @@
 # Changelog
 
+## Version 0.1.1
+
+### Changed
+- Fixed parsing issue when checker would ignore ranges after finding a line comment anywhere in the file
+
 ## Version 0.1.0
 
 ### Added

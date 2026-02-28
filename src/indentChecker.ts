@@ -30,13 +30,13 @@ type Setting = {
 }
 
 /*---------------------- Globals ----------------------------------------------------------------*/
-const S_LB_INDENT_W: Setting = {setting:"lineBreakIndentWidth", default: 8}
-const S_LB_TAB_SIZE: Setting = {setting:"lineBreakTabSize", default: 4}
+const S_LB_INDENT_W: Setting = { setting: "lineBreakIndentWidth", default: 8 }
+const S_LB_TAB_SIZE: Setting = { setting: "lineBreakTabSize", default: 4 }
 
-const S_RULER_ENA : Setting = {setting:"rulerHighlight", default: true}
-const S_RULER_COLOR : Setting = {setting:"rulerHighlightColor", default: "#8F24B3EF"}
-const S_TEXT_BG_ENA : Setting = {setting:"textHighlight", default: true}
-const S_TEXT_BG_COLOR : Setting = {setting:"textHighlightColor", default: "#B82EE620"}
+const S_RULER_ENA: Setting = { setting: "rulerHighlight", default: true }
+const S_RULER_COLOR: Setting = { setting: "rulerHighlightColor", default: "#8F24B3EF" }
+const S_TEXT_BG_ENA: Setting = { setting: "textHighlight", default: true }
+const S_TEXT_BG_COLOR: Setting = { setting: "textHighlightColor", default: "#B82EE620" }
 
 let badIndentDeco: vscode.TextEditorDecorationType | undefined
 
@@ -54,7 +54,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     // Register commands
     context.subscriptions.push(vscode.commands.registerCommand('bmx-workspace.fixLineBreaks',
-        (args: {}) => fixIndentationViolationsInActiveEditor()));
+        _ => fixIndentationViolationsInActiveEditor()));
 }
 
 export function deactivate() {
@@ -147,144 +147,6 @@ function clearIndentationViolations(doc: vscode.TextDocument) {
     }
 }
 
-function getParenRanges(doc: vscode.TextDocument) {
-    const text = doc.getText();
-
-    const stack: number[] = [];
-    const ranges: vscode.Range[] = [];
-    let state = State.Code;
-    let escape = false;
-    let atLineStart = true;     // Saw nothing except whitespace since last newline
-    let inDirective = false;    // Currently inside a preprocessor directive definition
-
-    const isNewlineChar = (ch: string) => ch === "\n" || ch === "\r";
-    const isWhitespaceChar = (ch: string) => ch === "\t" || ch === " ";
-    const isLineSpliceAt = (i: number): boolean => {
-        let j = i - 1;
-        if (j < 0) return false;
-
-        // If we're at '\n' and previous is '\r', backslash would be before '\r'
-        if (text[i] === "\n" && text[j] === "\r") j--;
-
-        return j >= 0 && text[j] === "\\";
-    };
-
-    console.log("Parsing ", doc.fileName)
-    for (let i = 0; i < text.length; i++) {
-        const ch = text[i];
-        const next = (i + 1 < text.length) ? text[i + 1] : "";
-
-        if (isNewlineChar(ch)) {
-            // End directive if this newline isn't spliced
-            if (inDirective && !isLineSpliceAt(i)) {
-                inDirective = false;
-            }
-
-            atLineStart = true;
-
-            continue;
-        }
-
-        switch (state) {
-            case State.LineComment: {
-                if (ch === "\n") state = State.Code;
-                break;
-            }
-
-            case State.BlockComment: {
-                if (ch === "*" && next === "/") {
-                    state = State.Code;
-                    i++;
-                }
-                break;
-            }
-
-            case State.String: {
-                if (escape) {
-                    escape = false;
-                } else if (ch === "\\") {
-                    escape = true;
-                } else if (ch === '"') {
-                    state = State.Code;
-                }
-                break;
-            }
-
-            case State.Char: {
-                if (escape) {
-                    escape = false;
-                } else if (ch === "\\") {
-                    escape = true;
-                } else if (ch === "'") {
-                    state = State.Code;
-                }
-                break;
-            }
-
-            case State.Code: {
-                // Detect preprocessor directive start
-                if (!inDirective && atLineStart) {
-                    if (isWhitespaceChar(ch)) {
-                        break;
-                    }
-                    if (ch === "#") {
-                        inDirective = true;
-                        atLineStart = false;
-                        break;
-                    }
-                }
-
-                if (atLineStart && !(isWhitespaceChar(ch))) {
-                    atLineStart = false;
-                }
-
-                if (ch === "/" && next === "/") {
-                    state = State.LineComment;
-                    i++;
-                    break;
-                }
-                if (ch === "/" && next === "*") {
-                    state = State.BlockComment;
-                    i++;
-                    break;
-                }
-                if (ch === '"') {
-                    state = State.String;
-                    escape = false;
-                    break;
-                }
-                if (ch === "'") {
-                    state = State.Char;
-                    escape = false;
-                    break;
-                }
-
-                if (inDirective) {
-                    break;
-                }
-
-                // Record range start/end
-                if (ch === "(") {
-                    stack.push(i);
-                } else if (ch === ")") {
-                    const start = stack.pop();
-                    if (start !== undefined && stack.length === 0) {
-                        // Range is [start, i+1) so it includes both '(' and ')'
-                        const startPos = doc.positionAt(start);
-                        const endPos = doc.positionAt(i + 1);
-                        const range = new vscode.Range(startPos, endPos);
-                        ranges.push(range);
-                    }
-                }
-                break;
-            }
-        }
-    }
-
-    return ranges;
-}
-
-
 function indentWidth(text: string, tabSize: number): [number, IndentType] {
     let type = IndentType.None
     let nSpacesAfterTabs = 0
@@ -335,6 +197,179 @@ function indentWidth(text: string, tabSize: number): [number, IndentType] {
     return [w, type];
 }
 
+function isWhitespace(ch: string) {
+    return (ch === " " || ch === "\t");
+}
+
+function isLineComment(ch: string, next: string) {
+    return (ch === "/" && next === "/");
+}
+
+function isBlockCommentStart(ch: string, next: string) {
+    return (ch === "/" && next === "*");
+}
+
+function isBlockCommentEnd(ch: string, next: string) {
+    return (ch === "*" && next === "/");
+}
+
+function isLineSplicedAt(text: string, i: number): boolean {
+    if (text[i] != '\n') return false
+    // Backtrack to the last non-whitespace and non-\r character
+    for (; i > 0 && (text[i] === "\r" || isWhitespace(text[i])); --i) { }
+    return text[i] === "\\";
+}
+
+function getParenRanges(doc: vscode.TextDocument) {
+    const text = doc.getText()
+
+    const stack: number[] = []
+    const ranges: vscode.Range[] = []
+    let state = State.Code
+    let escape = false
+    let atLineStart = true     // Saw nothing except whitespace since last newline
+    let inDirective = false    // Currently inside a preprocessor directive definition
+
+    console.log("Parsing ", doc.fileName)
+    for (let i = 0; i < text.length; ++i) {
+        if (text[i] == '\r') i++
+        const ch = text[i]
+        const next = (i + 1 < text.length) ? text[i + 1] : ""
+
+        switch (state) {
+            case State.LineComment: {
+                if (ch === "\n") state = State.Code
+                break;
+            }
+
+            case State.BlockComment: {
+                if (isBlockCommentEnd(ch, next)) { state = State.Code; i++; }
+                break;
+            }
+
+            case State.String: {
+                if (escape) escape = false
+                else if (ch === "\\") escape = true
+                else if (ch === '"') state = State.Code
+                break;
+            }
+
+            case State.Char: {
+                if (escape) escape = false
+                else if (ch === "\\") escape = true
+                else if (ch === "'") state = State.Code
+                break;
+            }
+
+            case State.Code: {
+                // Detect first non-whitespace character
+                if (atLineStart && !isWhitespace(ch)) {
+                    atLineStart = false;
+
+                    // It's a preprocessor directive start if character is #
+                    if (!inDirective && ch === "#") inDirective = true;
+                }
+
+                // End directive if this newline isn't spliced
+                if (inDirective && text[i] == '\n' && !isLineSplicedAt(text, i)) {
+                    inDirective = false;
+                }
+
+                // Enter comments
+                if (isLineComment(ch, next)) {
+                    state = State.LineComment;
+                    i++;
+                    break;
+                }
+                if (isBlockCommentStart(ch, next)) {
+                    state = State.BlockComment;
+                    i++;
+                    break;
+                }
+
+                // Enter strings/chars
+                if (ch === '"') {
+                    state = State.String;
+                    escape = false;
+                    break;
+                }
+                if (ch === "'") {
+                    state = State.Char;
+                    escape = false;
+                    break;
+                }
+
+                // Detect parenthesis range starts/ends. Add to list of ranges once end is found.
+                if (!inDirective) {
+                    if (ch === "(") {
+                        stack.push(i);
+                    } else if (ch === ")") {
+                        const start = stack.pop();
+                        if (start !== undefined && stack.length === 0) {
+                            // Range is [start, i+1) so it includes both '(' and ')'
+                            const startPos = doc.positionAt(start);
+                            const endPos = doc.positionAt(i + 1);
+                            const range = new vscode.Range(startPos, endPos);
+                            ranges.push(range);
+                        }
+                    }
+                }
+
+                break;
+            }
+        }
+
+        if (ch === "\n") atLineStart = true
+    }
+
+    return ranges;
+}
+
+function getViolatingIndentRangeFromLine(
+    doc: vscode.TextDocument, lineIdx: number, expectedIndent: number
+): ViolatingRange | undefined {
+    if ((lineIdx < 0) || (lineIdx >= doc.lineCount)) return undefined
+
+    const tabSize = getConf(S_LB_TAB_SIZE)
+    const line = doc.lineAt(lineIdx);
+    // Select indentation range on the next line
+    const indentRange = new vscode.Range(
+        new vscode.Position(line.lineNumber, 0),
+        new vscode.Position(line.lineNumber, line.firstNonWhitespaceCharacterIndex)
+    )
+    const [actualIndent, indentType] = indentWidth(doc.getText(indentRange), tabSize)
+
+    // Check if line has bad indentation
+    if (
+        // Expected some indentation, but found none
+        (expectedIndent > 0 && indentType === IndentType.None) ||
+        // Unexpected indentation type
+        (indentType === IndentType.Mixed || indentType == IndentType.TabsThenTooManySpaces) ||
+        // Unexpected indentation width
+        (expectedIndent != actualIndent) ||
+        // Desired indentation can be achieved with only tabs, but spaces found
+        (indentType == IndentType.TabsThenSpaces && actualIndent % tabSize == 0)
+    ) {
+        console.log("Line %d violates indentation", lineIdx)
+
+        // Construct the desired indetation string
+        let expectedIndentStr: string
+        if (indentType === IndentType.Tabs ||
+            indentType == IndentType.TabsThenSpaces ||
+            indentType === IndentType.TabsThenTooManySpaces
+        ) {
+            // Use as many tabs as possible, pad the rest with spaces
+            expectedIndentStr = "\t".repeat(Math.trunc(expectedIndent / tabSize)) +
+                " ".repeat(expectedIndent % tabSize)
+        } else {
+            // Use only spaces
+            expectedIndentStr = " ".repeat(expectedIndent)
+        }
+
+        return { range: indentRange, expectedIndentation: expectedIndentStr }
+    }
+}
+
 function getViolatingIndentRanges(doc: vscode.TextDocument, range: vscode.Range): ViolatingRange[] {
     const violatingRanges: ViolatingRange[] = []
     const tabSize = getConf(S_LB_TAB_SIZE)
@@ -345,84 +380,17 @@ function getViolatingIndentRanges(doc: vscode.TextDocument, range: vscode.Range)
     let escape = false;
 
     for (let i = 0; i < text.length; i++) {
+        if (text[i] === "\r") i++;
         const ch = text[i];
         const next = i + 1 < text.length ? text[i + 1] : "";
 
-        // Handle newlines (treat CRLF as one newline)
-        if (ch === "\r" || ch === "\n") {
-            const wasCode = (state === State.Code);
-
-            // line comment ends at newline
-            if (state === State.LineComment) state = State.Code;
-
-            const nextLine = doc.lineAt(lineIdx + 1);
-            if (
-                // Only enforce indentation for line breaks seen while in Code
-                wasCode && (indentStack.length !== 0) &&
-                // Line within bounds
-                (lineIdx + 1 >= 0) && (lineIdx + 1 < doc.lineCount)
-            ) {
-                const desiredIndentWidth = getConf(S_LB_INDENT_W)
-                const indentRange = new vscode.Range(
-                    new vscode.Position(nextLine.lineNumber, 0),
-                    new vscode.Position(nextLine.lineNumber, nextLine.firstNonWhitespaceCharacterIndex)
-                )
-                const expected = indentStack[indentStack.length - 1] + desiredIndentWidth
-                const [actual, indentType] = indentWidth(doc.getText(indentRange), tabSize)
-
-                if (
-                    // Expected some indentation, but found none
-                    (expected > 0 && indentType === IndentType.None) ||
-                    // Unexpected indentation type
-                    (indentType === IndentType.Mixed || indentType == IndentType.TabsThenTooManySpaces) ||
-                    // Unexpected indentation width
-                    (expected != actual) ||
-                    // Desired indentation can be achieved with only tabs
-                    (indentType == IndentType.TabsThenSpaces && actual % tabSize == 0)
-                ) {
-                    console.log("Line %d violates indentation", lineIdx + 1)
-                    let expectedIndent: string
-                    if (indentType === IndentType.Tabs ||
-                        indentType == IndentType.TabsThenSpaces ||
-                        indentType === IndentType.TabsThenTooManySpaces
-                    ) {
-                        expectedIndent = "\t".repeat(Math.trunc(expected / tabSize)) + " ".repeat(expected % tabSize)
-                    } else {
-                        expectedIndent = " ".repeat(expected)
-                    }
-                    violatingRanges.push({ range: indentRange, expectedIndentation: expectedIndent })
-                }
-            }
-
-            lineIdx += 1;
-
-            // Skip the '\n' in CRLF
-            if (ch === "\r" && next === "\n") i++;
-            continue;
-        }
-
         switch (state) {
-            case State.Code: {
-                // enter comments
-                if (ch === "/" && next === "/") { state = State.LineComment; i++; break; }
-                if (ch === "/" && next === "*") { state = State.BlockComment; i++; break; }
-
-                // enter strings/chars
-                if (ch === '"') { state = State.String; escape = false; break; }
-                if (ch === "'") { state = State.Char; escape = false; break; }
-
-                // parens logic (your stack rule)
-                if (ch === "(") {
-                    const [indent, _] = indentWidth(doc.lineAt(lineIdx).text, tabSize);
-                    indentStack.push(indent);
-                } else if (ch === ")") {
-                    indentStack.pop();
-                }
+            case State.LineComment:
+                if (ch == "\n") state = State.Code;
                 break;
-            }
 
             case State.BlockComment:
-                if (ch === "*" && next === "/") { state = State.Code; i++; }
+                if (isBlockCommentEnd(ch, next)) { state = State.Code; i++; }
                 break;
 
             case State.String:
@@ -437,10 +405,36 @@ function getViolatingIndentRanges(doc: vscode.TextDocument, range: vscode.Range)
                 else if (ch === "'") state = State.Code;
                 break;
 
-            case State.LineComment:
-                // handled by newline
+            case State.Code: {
+                // Enter comments
+                if (isLineComment(ch, next)) { state = State.LineComment; i++; break; }
+                if (isBlockCommentStart(ch, next)) { state = State.BlockComment; i++; break; }
+
+                // Enter strings/chars
+                if (ch === '"') { state = State.String; escape = false; break; }
+                if (ch === "'") { state = State.Char; escape = false; break; }
+
+                // Keep track of line indentations for all opening parentheses
+                if (ch === "(") {
+                    const [indent, _] = indentWidth(doc.lineAt(lineIdx).text, tabSize);
+                    indentStack.push(indent);
+                } else if (ch === ")") {
+                    indentStack.pop();
+                }
+
+                // When inside a parenthesis range and at end of line,
+                // Check next line for indentation violations and add to list if found any
+                if ((ch === "\n") && (indentStack.length !== 0)) {
+                    const expectedIndentIncrease = getConf(S_LB_INDENT_W)
+                    const expectedIndent = indentStack[indentStack.length - 1] + expectedIndentIncrease
+                    const vr = getViolatingIndentRangeFromLine(doc, lineIdx + 1, expectedIndent)
+                    if (vr) violatingRanges.push(vr)
+                }
                 break;
+            }
         }
+
+        if (text[i] === "\n") lineIdx++
     }
 
     return violatingRanges;
