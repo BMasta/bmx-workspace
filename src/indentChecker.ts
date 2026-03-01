@@ -19,6 +19,11 @@ enum IndentType {
     Mixed,
 }
 
+enum RangeLevel {
+    Top,
+    Inner,
+}
+
 type ViolatingRange = {
     range: vscode.Range
     expectedIndentation: string
@@ -29,21 +34,28 @@ type Setting = {
     default: any
 }
 
-type RangeClassifier = (t: string, i: number, inRange: boolean) => boolean
-type IndentationMarker = (t: string, i: number) => boolean;
+type RangeFeatures = {
+    level: RangeLevel
+}
+
+type RangeClassifier = (t: string, i: number, s: number) => RangeFeatures
+type RangeBoolProvider = (t: string, i: number) => boolean
 
 type RangeDescriptor = {
-    // When true, all unfinished ranges are discarded
-    invalid: RangeClassifier
+    // When true, the current range is discarded
+    skip: RangeBoolProvider
     // When true, a new range is started
-    start: RangeClassifier
-    // When true, all unfinished ranges are ended
-    end: RangeClassifier
+    start: RangeBoolProvider
+    // When true, the current range is terminated and saved
+    end: RangeBoolProvider
     // When true, takes current line indentation + desired as a baseline for subsequent lines
-    indentUpdate: IndentationMarker
+    indentUpdate: RangeBoolProvider
     // When true, restores the last target indentation. No-op if only one indentation is left.
-    indentRestore: IndentationMarker
+    indentRestore: RangeBoolProvider
+    // Classify range based on known range features
+    classify: RangeClassifier
 }
+type ClassifiedRange = {range: vscode.Range, feats: RangeFeatures}
 
 /*---------------------- Globals ----------------------------------------------------------------*/
 const S_LB_INDENT_W: Setting = { setting: "lineBreakIndentWidth", default: 8 }
@@ -56,13 +68,18 @@ const S_TEXT_BG_COLOR: Setting = { setting: "textHighlightColor", default: "#B82
 
 let badIndentDeco: vscode.TextEditorDecorationType | undefined
 
+
 let codeLineRangeDescriptor: RangeDescriptor = {
-    invalid: (t, i, _) => [":", "{", "}"].includes(t[i]),
-    start: (t, i, inRange) =>
-        !(inRange || [";", ",", "\r", "\n", "\t", " "].includes(t[i]) || !isFirstCharInLine(t, i)),
-    end: (t, i, _) => t[i] === ";",
+    skip: (t, i) => [":", "{", "}"].includes(t[i]),
+    start: (t, i) => isFirstCharInLine(t, i) && ![";", ",", "\r", "\n", "\t", " "].includes(t[i]),
+    end: (t, i) => t[i] === ";",
     indentUpdate: (t, i) => ["(", "["].includes(t[i]),
     indentRestore: (t, i) => [")", "]"].includes(t[i]),
+    classify: (t, i, s) => {
+        let feats: RangeFeatures = {level: RangeLevel.Inner}
+        if (s === 0 || t[s - 1] === "\n") feats.level = RangeLevel.Top
+        return feats
+    }
 }
 
 /*---------------------- APIs -------------------------------------------------------------------*/
@@ -112,17 +129,17 @@ function refreshAllIndentationViolations(resetDecorations: boolean) {
     }
 
     // Render decorations in all opened editors
-    const rangeCache = new Map<string, vscode.Range[]>()
+    const rangeCache = new Map<string, ClassifiedRange[]>()
     for (const ed of vscode.window.visibleTextEditors) {
         if (ed.document.languageId !== "c") continue
 
         const docUri = ed.document.uri.toString(true);
-        let offendingRanges = rangeCache.get(docUri)
-        if (offendingRanges === undefined) {
-            offendingRanges = getViolatingLineBreakRanges(ed.document)
-            rangeCache.set(docUri, offendingRanges)
+        let violatingRanges = rangeCache.get(docUri)
+        if (violatingRanges === undefined) {
+            violatingRanges = getViolatingLineBreakRanges(ed.document)
+            rangeCache.set(docUri, violatingRanges)
         }
-        ed.setDecorations(badIndentDeco, offendingRanges)
+        ed.setDecorations(badIndentDeco, violatingRanges)
     }
 }
 
@@ -263,8 +280,8 @@ function isFirstCharInLine(text: string, i: number): boolean {
 function getLineBreakRanges(doc: vscode.TextDocument, rd: RangeDescriptor) {
     const text = doc.getText()
 
-    const stack: number[] = []
-    const ranges: vscode.Range[] = []
+    let start = -1
+    const ranges: ClassifiedRange[] = []
     let state = State.Code
     let escape = false
     let atLineStart = true     // Saw nothing except whitespace since last newline
@@ -340,23 +357,20 @@ function getLineBreakRanges(doc: vscode.TextDocument, rd: RangeDescriptor) {
                     break;
                 }
 
-                // Detect range starts/ends. Add to list of ranges once end is found.
                 if (!inDirective) {
-                    if (rd.invalid(text, i, stack.length > 0)) {
-                        stack.length = 0;
-                    } else if (rd.start(text, i, stack.length > 0)) {
-                        stack.push(i);
-                    } else if (rd.end(text, i, stack.length > 0)) {
-                        const start = stack.pop();
-                        if (start !== undefined && stack.length === 0) {
-                            const startPos = doc.positionAt(start);
-                            const endPos = doc.positionAt(i + 1);
-                            const range = new vscode.Range(startPos, endPos);
-                            ranges.push(range);
-                        }
+                    if (rd.skip(text, i)) {
+                        // Skip current range
+                        start = -1;
+                    } else if (start === -1 && rd.start(text, i)) {
+                        // Start new range
+                        start = i;
+                    } else if (start !== -1 && rd.end(text, i)) {
+                        // End and save current range
+                        const range = new vscode.Range(doc.positionAt(start), doc.positionAt(i + 1));
+                        ranges.push({range: range, feats: rd.classify(text, i, start)});
+                        start = -1;
                     }
                 }
-
                 break;
             }
         }
@@ -368,11 +382,13 @@ function getLineBreakRanges(doc: vscode.TextDocument, rd: RangeDescriptor) {
 }
 
 function getViolatingLineBreakRanges(doc: vscode.TextDocument) {
-    const violatingRanges: vscode.Range[] = [];
+    const violatingRanges: ClassifiedRange[] = [];
 
     const addIndentRangesForLBRanges = (rd: RangeDescriptor) => {
         const ranges = getLineBreakRanges(doc, rd);
         for (const r of ranges) {
+            // Do not process top-level ranges
+            if (r.feats.level === RangeLevel.Top) continue
             if (getViolatingIndentRanges(doc, r, rd).length > 0) {
                 violatingRanges.push(r);
             }
@@ -435,12 +451,12 @@ function getViolatingIndentRangeFromLine(
 }
 
 function getViolatingIndentRanges(
-    doc: vscode.TextDocument, range: vscode.Range, rd: RangeDescriptor
+    doc: vscode.TextDocument, cr: ClassifiedRange, rd: RangeDescriptor
 ): ViolatingRange[] {
     const violatingRanges: ViolatingRange[] = []
     const tabSize = getConf(S_LB_TAB_SIZE)
-    const text = doc.getText(range);
-    let lineIdx = range.start.line;
+    const text = doc.getText(cr.range);
+    let lineIdx = cr.range.start.line;
     const indentStack: number[] = [];
     let state = State.Code;
     let escape = false;

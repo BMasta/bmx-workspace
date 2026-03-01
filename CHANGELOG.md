@@ -1,5 +1,10 @@
 # Changelog
 
+## Version 0.1.6
+
+### Changed
+- Do not check top-level ranges
+
 ## Version 0.1.5
 
 ### Changed
