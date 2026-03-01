@@ -1,5 +1,6 @@
 import * as vscode from 'vscode'
 import { EXT_NAME } from './extension';
+import { features } from 'process';
 
 /*---------------------- Types ------------------------------------------------------------------*/
 enum State {
@@ -24,6 +25,11 @@ enum RangeLevel {
     Inner,
 }
 
+enum RangeKind {
+    Unknown,
+    Statement
+}
+
 type ViolatingRange = {
     range: vscode.Range
     expectedIndentation: string
@@ -36,14 +42,14 @@ type Setting = {
 
 type RangeFeatures = {
     level: RangeLevel
+    kind: RangeKind
 }
 
-type RangeClassifier = (t: string, i: number, s: number) => RangeFeatures
 type RangeBoolProvider = (t: string, i: number) => boolean
+type RangePostBoolProvider = (t: string, i: number, s: number, f: RangeFeatures) => boolean
+type RangeClassifier = (t: string, i: number, s: number) => RangeFeatures
 
 type RangeDescriptor = {
-    // When true, the current range is discarded
-    skip: RangeBoolProvider
     // When true, a new range is started
     start: RangeBoolProvider
     // When true, the current range is terminated and saved
@@ -54,8 +60,12 @@ type RangeDescriptor = {
     indentRestore: RangeBoolProvider
     // Classify range based on known range features
     classify: RangeClassifier
+    // When true, the classified range is discarded
+    skip: RangePostBoolProvider
+    // When true, the classified range is continued
+    continue: RangePostBoolProvider
 }
-type ClassifiedRange = {range: vscode.Range, feats: RangeFeatures}
+type ClassifiedRange = { range: vscode.Range, feats: RangeFeatures }
 
 /*---------------------- Globals ----------------------------------------------------------------*/
 const S_LB_INDENT_W: Setting = { setting: "lineBreakIndentWidth", default: 8 }
@@ -70,15 +80,42 @@ let badIndentDeco: vscode.TextEditorDecorationType | undefined
 
 
 let codeLineRangeDescriptor: RangeDescriptor = {
-    skip: (t, i) => [":", "{", "}"].includes(t[i]),
-    start: (t, i) => isFirstCharInLine(t, i) && ![";", ",", "\r", "\n", "\t", " "].includes(t[i]),
-    end: (t, i) => t[i] === ";",
+    start: (t, i) => isFirstCharInLine(t, i) &&
+        ![";", ":", "{", "}", ",", "\r", "\n", "\t", " "].includes(t[i]),
+    end: (t, i) => [";", ":", "{", "}"].includes(t[i]),
     indentUpdate: (t, i) => ["(", "["].includes(t[i]),
     indentRestore: (t, i) => [")", "]"].includes(t[i]),
     classify: (t, i, s) => {
-        let feats: RangeFeatures = {level: RangeLevel.Inner}
+        let feats: RangeFeatures = { level: RangeLevel.Inner, kind: RangeKind.Unknown }
+
+        // Find top-level ranges
         if (s === 0 || t[s - 1] === "\n") feats.level = RangeLevel.Top
+
+        const rText = t.slice(s, i + 1);
+
+        // Find statement ranges
+        for (const kw of ["if", "else", "switch", "case", "do", "while", "for"]) {
+            if (rText.startsWith(kw) &&
+                (rText.length === kw.length || !(/^[a-zA-Z_]$/.test(rText[kw.length])))
+            ) {
+                feats.kind = RangeKind.Statement
+            }
+        }
+
         return feats
+    },
+    skip: (t, i, s, f) => {
+        if (f.level === RangeLevel.Top) return true;
+        if (f.kind !== RangeKind.Statement && ["{", "}", ":"].includes(t[i])) return true;
+
+        return false;
+    },
+    continue: (t, i, s, f) => {
+        if (f.kind === RangeKind.Statement && t.slice(s, i + 1).startsWith("for") && t[i] === ";") {
+            return true
+        }
+
+        return false
     }
 }
 
@@ -358,16 +395,15 @@ function getLineBreakRanges(doc: vscode.TextDocument, rd: RangeDescriptor) {
                 }
 
                 if (!inDirective) {
-                    if (rd.skip(text, i)) {
-                        // Skip current range
-                        start = -1;
-                    } else if (start === -1 && rd.start(text, i)) {
-                        // Start new range
+                    if (start === -1 && rd.start(text, i)) {
                         start = i;
                     } else if (start !== -1 && rd.end(text, i)) {
-                        // End and save current range
-                        const range = new vscode.Range(doc.positionAt(start), doc.positionAt(i + 1));
-                        ranges.push({range: range, feats: rd.classify(text, i, start)});
+                        const feats = rd.classify(text, i, start);
+                        if (!rd.skip(text, i, start, feats)) {
+                            if (rd.continue(text, i, start, feats)) break;
+                            const range = new vscode.Range(doc.positionAt(start), doc.positionAt(i + 1));
+                            ranges.push({ range: range, feats: feats });
+                        }
                         start = -1;
                     }
                 }
@@ -387,8 +423,6 @@ function getViolatingLineBreakRanges(doc: vscode.TextDocument) {
     const addIndentRangesForLBRanges = (rd: RangeDescriptor) => {
         const ranges = getLineBreakRanges(doc, rd);
         for (const r of ranges) {
-            // Do not process top-level ranges
-            if (r.feats.level === RangeLevel.Top) continue
             if (getViolatingIndentRanges(doc, r, rd).length > 0) {
                 violatingRanges.push(r);
             }

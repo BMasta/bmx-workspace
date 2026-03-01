@@ -1,5 +1,15 @@
 # Changelog
 
+## Version 0.1.8
+
+### Changed
+- Flag statement argument ranges (including a for loop that has semicolons)
+
+## Version 0.1.7
+
+### Changed
+- Do not fix top-level ranges
+
 ## Version 0.1.6
 
 ### Changed
